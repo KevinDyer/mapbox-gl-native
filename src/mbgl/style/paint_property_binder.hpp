@@ -11,11 +11,12 @@ namespace style {
 template <class T, class A>
 class ConstantPaintPropertyBinder {
 public:
-    using Attribute = A;
-    using MinMaxAttribute = attributes::MinMax<Attribute>;
+    using BaseAttribute = A;
+    using BaseAttributeValue = typename BaseAttribute::Value;
+    using BaseAttributeBinding = typename BaseAttribute::Binding;
 
-    using AttributeValue = typename MinMaxAttribute::Value;
-    using AttributeBinding = typename MinMaxAttribute::Binding;
+    using Attribute = attributes::ZoomInterpolatedAttribute<BaseAttribute>;
+    using AttributeBinding = typename Attribute::Binding;
 
     ConstantPaintPropertyBinder(T constant_)
         : constant(std::move(constant_)) {
@@ -26,8 +27,8 @@ public:
 
     AttributeBinding attributeBinding(const PossiblyEvaluatedPropertyValue<T>& currentValue) const {
         auto val = currentValue.constantOr(constant);
-        return typename MinMaxAttribute::ConstantBinding {
-            MinMaxAttribute::value(val, val)
+        return typename Attribute::ConstantBinding {
+            Attribute::value(val, val)
         };
     }
 
@@ -42,15 +43,13 @@ private:
 template <class T, class A>
 class SourceFunctionPaintPropertyBinder {
 public:
-    using Attribute = A;
-    
-    using MinMaxAttribute = attributes::MinMax<Attribute>;
+    using BaseAttribute = A;
+    using BaseAttributeValue = typename BaseAttribute::Value;
+    using BaseAttributeBinding = typename BaseAttribute::Binding;
+    using BaseVertex = typename gl::Attributes<BaseAttribute>::Vertex;
 
-    using AttributeValue = typename MinMaxAttribute::Value;
-    using AttributeBinding = typename MinMaxAttribute::Binding;
-
-    using Attributes = gl::Attributes<MinMaxAttribute>;
-    using Vertex = typename Attributes::Vertex;
+    using Attribute = attributes::ZoomInterpolatedAttribute<BaseAttribute>;
+    using AttributeBinding = typename Attribute::Binding;
 
     SourceFunctionPaintPropertyBinder(SourceFunction<T> function_, T defaultValue_)
         : function(std::move(function_)),
@@ -59,9 +58,9 @@ public:
 
     void populateVertexVector(const GeometryTileFeature& feature, std::size_t length) {
         auto val = function.evaluate(feature, defaultValue);
-        AttributeValue value = MinMaxAttribute::value(val, val);
+        BaseAttributeValue value = BaseAttribute::value(val);
         for (std::size_t i = vertexVector.vertexSize(); i < length; ++i) {
-            vertexVector.emplace_back(Vertex { value });
+            vertexVector.emplace_back(BaseVertex { value });
         }
     }
 
@@ -72,12 +71,11 @@ public:
     AttributeBinding attributeBinding(const PossiblyEvaluatedPropertyValue<T>& currentValue) const {
         if (currentValue.isConstant()) {
             auto val = *currentValue.constant();
-            return typename MinMaxAttribute::ConstantBinding {
-                MinMaxAttribute::value(val, val)
+            return typename Attribute::ConstantBinding {
+                Attribute::value(val, val)
             };
         } else {
-            return Attributes::allVariableBindings(*vertexBuffer)
-                .template get<MinMaxAttribute>();
+            return Attribute::variableBinding(*vertexBuffer, 0, BaseAttribute::Dimensions);
         }
     }
 
@@ -88,24 +86,17 @@ public:
 private:
     SourceFunction<T> function;
     T defaultValue;
-    gl::VertexVector<Vertex> vertexVector;
-    optional<gl::VertexBuffer<Vertex>> vertexBuffer;
+    gl::VertexVector<BaseVertex> vertexVector;
+    optional<gl::VertexBuffer<BaseVertex>> vertexBuffer;
 };
 
 template <class T, class A>
 class CompositeFunctionPaintPropertyBinder {
 public:
-    using Attribute = A;
-    
-    using MinMaxAttribute = attributes::MinMax<Attribute>;
-    
-    using AttributeValue = typename MinMaxAttribute::Value;
-    using AttributeBinding = typename MinMaxAttribute::Binding;
-
-
-
-    using Attributes = gl::Attributes<MinMaxAttribute>;
-    using Vertex = typename Attributes::Vertex;
+    using Attribute = attributes::ZoomInterpolatedAttribute<A>;
+    using AttributeValue = typename Attribute::Value;
+    using AttributeBinding = typename Attribute::Binding;
+    using Vertex = typename gl::Attributes<Attribute>::Vertex;
 
     CompositeFunctionPaintPropertyBinder(CompositeFunction<T> function_, float zoom, T defaultValue_)
         : function(std::move(function_)),
@@ -115,7 +106,7 @@ public:
 
     void populateVertexVector(const GeometryTileFeature& feature, std::size_t length) {
         Range<T> range = function.evaluate(std::get<1>(coveringRanges), feature, defaultValue);
-        AttributeValue minMax = MinMaxAttribute::value(range.min, range.max);
+        AttributeValue minMax = Attribute::value(range.min, range.max);
         for (std::size_t i = vertexVector.vertexSize(); i < length; ++i) {
             vertexVector.emplace_back(Vertex { minMax });
         }
@@ -128,12 +119,11 @@ public:
     AttributeBinding attributeBinding(const PossiblyEvaluatedPropertyValue<T>& currentValue) const {
         if (currentValue.isConstant()) {
             auto val = *currentValue.constant();
-            return typename MinMaxAttribute::ConstantBinding {
-                MinMaxAttribute::value(val, val)
+            return typename Attribute::ConstantBinding {
+                Attribute::value(val, val)
             };
         } else {
-            return Attributes::allVariableBindings(*vertexBuffer)
-                .template get<MinMaxAttribute>();
+            return Attribute::variableBinding(*vertexBuffer, 0);
         }
     }
 
@@ -154,24 +144,27 @@ template <class PaintProperty>
 class PaintPropertyBinder {
 public:
     using Type = typename PaintProperty::Type;
-    using Attribute = typename PaintProperty::Attribute;
     using PropertyValue = typename PaintProperty::EvaluatedType;
 
+    using BaseAttribute = typename PaintProperty::Attribute;
+    using Attribute = attributes::ZoomInterpolatedAttribute<BaseAttribute>;
+    using AttributeBinding = typename Attribute::Binding;
+
     using Binder = variant<
-        ConstantPaintPropertyBinder<Type, Attribute>,
-        SourceFunctionPaintPropertyBinder<Type, Attribute>,
-        CompositeFunctionPaintPropertyBinder<Type, Attribute>>;
+        ConstantPaintPropertyBinder<Type, BaseAttribute>,
+        SourceFunctionPaintPropertyBinder<Type, BaseAttribute>,
+        CompositeFunctionPaintPropertyBinder<Type, BaseAttribute>>;
 
     PaintPropertyBinder(const PropertyValue& value, float zoom)
         : binder(value.match(
             [&] (const Type& constant) -> Binder {
-                return ConstantPaintPropertyBinder<Type, Attribute>(constant);
+                return ConstantPaintPropertyBinder<Type, BaseAttribute>(constant);
             },
             [&] (const SourceFunction<Type>& function) {
-                return SourceFunctionPaintPropertyBinder<Type, Attribute>(function, PaintProperty::defaultValue());
+                return SourceFunctionPaintPropertyBinder<Type, BaseAttribute>(function, PaintProperty::defaultValue());
             },
             [&] (const CompositeFunction<Type>& function) {
-                return CompositeFunctionPaintPropertyBinder<Type, Attribute>(function, zoom, PaintProperty::defaultValue());
+                return CompositeFunctionPaintPropertyBinder<Type, BaseAttribute>(function, zoom, PaintProperty::defaultValue());
             }
         )) {
     }
@@ -187,9 +180,6 @@ public:
             b.upload(context);
         });
     }
-
-    using MinMaxAttribute = attributes::MinMax<Attribute>;
-    using AttributeBinding = typename MinMaxAttribute::Binding;
 
     AttributeBinding attributeBinding(const PropertyValue& currentValue) const {
         return binder.match([&] (const auto& b) {
@@ -238,13 +228,12 @@ public:
         });
     }
 
-    using MinMaxAttributes = gl::Attributes<typename PaintPropertyBinder<Ps>::MinMaxAttribute...>;
-
-    using AttributeBindings = typename MinMaxAttributes::Bindings;
+    using Attributes = gl::Attributes<typename PaintPropertyBinder<Ps>::Attribute...>;
+    using AttributeBindings = typename Attributes::Bindings;
 
     template <class EvaluatedProperties>
     AttributeBindings attributeBindings(const EvaluatedProperties& currentProperties) const {
-        return typename MinMaxAttributes::Bindings {
+        return typename Attributes::Bindings {
             binders.template get<Ps>().attributeBinding(currentProperties.template get<Ps>())...
         };
     }
